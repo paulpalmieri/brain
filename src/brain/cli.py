@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
-import tempfile
-from pathlib import Path
 
 import click
+from prompt_toolkit import PromptSession
+from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
@@ -19,17 +17,23 @@ from . import llm, store
 console = Console()
 
 
-def _open_editor() -> str:
-    editor = os.environ.get("EDITOR", "nano")
-    with tempfile.NamedTemporaryFile(
-        mode="w+", suffix=".md", prefix="brain-", delete=False
-    ) as tf:
-        tmp = Path(tf.name)
+def _compose() -> str:
+    kb = KeyBindings()
+
+    @kb.add("c-d")
+    def _submit(event) -> None:
+        event.current_buffer.validate_and_handle()
+
+    console.print(
+        "[dim]Write your entry. "
+        "[bold]Esc↵[/bold] or [bold]^D[/bold] to save · "
+        "[bold]^C[/bold] to cancel.[/dim]"
+    )
+    session: PromptSession[str] = PromptSession(multiline=True, key_bindings=kb)
     try:
-        subprocess.call([editor, str(tmp)])
-        return tmp.read_text(encoding="utf-8")
-    finally:
-        tmp.unlink(missing_ok=True)
+        return session.prompt("› ")
+    except (KeyboardInterrupt, EOFError):
+        return ""
 
 
 @click.group()
@@ -42,7 +46,7 @@ def cli() -> None:
 @click.argument("text", required=False)
 def cmd_add(text: str | None) -> None:
     """Save an entry. With no argument, opens $EDITOR."""
-    body = text if text else _open_editor()
+    body = text if text else _compose()
     if not body.strip():
         console.print("[yellow]Empty entry, nothing saved.[/yellow]")
         sys.exit(1)
