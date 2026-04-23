@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta
 
 import click
 from prompt_toolkit import PromptSession
@@ -11,7 +12,8 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 
-from . import llm, store
+from . import llm, store, usage
+from .usage import Totals, Usage
 
 
 console = Console()
@@ -34,6 +36,39 @@ def _compose() -> str:
         return session.prompt("› ")
     except (KeyboardInterrupt, EOFError):
         return ""
+
+
+def _short_model(m: str) -> str:
+    s = m.removeprefix("claude-")
+    parts = s.rsplit("-", 1)
+    if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) == 8:
+        s = parts[0]
+    return s
+
+
+def _fmt_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
+def _fmt_cost(c: float) -> str:
+    if c == 0:
+        return "$0"
+    if c < 0.01:
+        return f"${c:.4f}"
+    return f"${c:.2f}"
+
+
+def _print_usage(u: Usage) -> None:
+    console.print(
+        f"[dim]↳ {_short_model(u.model)} · "
+        f"{_fmt_tokens(u.input_tokens)} in / "
+        f"{_fmt_tokens(u.output_tokens)} out · "
+        f"{_fmt_cost(u.cost_usd)}[/dim]"
+    )
 
 
 @click.group()
@@ -65,11 +100,12 @@ def cmd_search(query: str, limit: int) -> None:
         return
     try:
         with console.status("[dim]thinking...[/dim]", spinner="dots"):
-            answer = llm.search(query, entries)
+            answer, u = llm.search(query, entries)
     except RuntimeError as e:
         console.print(f"[red]{e}[/red]")
         sys.exit(1)
     console.print(Markdown(answer))
+    _print_usage(u)
 
 
 @cli.command("reflect")
@@ -82,11 +118,12 @@ def cmd_reflect(days: int) -> None:
         return
     try:
         with console.status("[dim]reflecting...[/dim]", spinner="dots"):
-            answer = llm.reflect(entries, days)
+            answer, u = llm.reflect(entries, days)
     except RuntimeError as e:
         console.print(f"[red]{e}[/red]")
         sys.exit(1)
     console.print(Markdown(answer))
+    _print_usage(u)
 
 
 @cli.command("list")
@@ -118,3 +155,67 @@ def cmd_show(entry_id: str) -> None:
     header = entry.created.strftime("%Y-%m-%d %H:%M")
     console.rule(f"[bold]{header}[/bold]  [dim]{entry.id}[/dim]")
     console.print(entry.text.rstrip())
+
+
+def _row(scope: str, t: Totals) -> tuple[str, str, str, str, str]:
+    return (
+        scope,
+        str(t.calls),
+        _fmt_tokens(t.input_tokens),
+        _fmt_tokens(t.output_tokens),
+        _fmt_cost(t.cost_usd),
+    )
+
+
+@cli.command("usage")
+def cmd_usage() -> None:
+    """Show LLM token + cost metrics."""
+    records = usage.all_records()
+    if not records:
+        console.print("[yellow]No LLM usage recorded yet.[/yellow]")
+        return
+
+    now = datetime.now()
+    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today = [r for r in records if datetime.fromisoformat(r.ts) >= start_of_today]
+    last_7 = [
+        r for r in records if datetime.fromisoformat(r.ts) >= now - timedelta(days=7)
+    ]
+    last_30 = [
+        r for r in records if datetime.fromisoformat(r.ts) >= now - timedelta(days=30)
+    ]
+
+    summary = Table(title="Usage", header_style="bold", title_style="bold")
+    summary.add_column("scope")
+    summary.add_column("calls", justify="right")
+    summary.add_column("in", justify="right")
+    summary.add_column("out", justify="right")
+    summary.add_column("cost", justify="right")
+    summary.add_row(*_row("today", usage.totals(today)))
+    summary.add_row(*_row("7 days", usage.totals(last_7)))
+    summary.add_row(*_row("30 days", usage.totals(last_30)))
+    summary.add_row(*_row("all time", usage.totals(records)))
+    console.print(summary)
+
+    by_cmd = usage.by_key(records, "command")
+    cmd_table = Table(title="By command", header_style="bold", title_style="bold")
+    cmd_table.add_column("command")
+    cmd_table.add_column("calls", justify="right")
+    cmd_table.add_column("in", justify="right")
+    cmd_table.add_column("out", justify="right")
+    cmd_table.add_column("cost", justify="right")
+    for name, t in sorted(by_cmd.items(), key=lambda kv: -kv[1].cost_usd):
+        cmd_table.add_row(*_row(name, t))
+    console.print(cmd_table)
+
+    by_model = usage.by_key(records, "model")
+    if len(by_model) > 1:
+        model_table = Table(title="By model", header_style="bold", title_style="bold")
+        model_table.add_column("model")
+        model_table.add_column("calls", justify="right")
+        model_table.add_column("in", justify="right")
+        model_table.add_column("out", justify="right")
+        model_table.add_column("cost", justify="right")
+        for name, t in sorted(by_model.items(), key=lambda kv: -kv[1].cost_usd):
+            model_table.add_row(*_row(_short_model(name), t))
+        console.print(model_table)

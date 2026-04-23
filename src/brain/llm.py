@@ -6,7 +6,9 @@ import os
 
 from anthropic import Anthropic
 
+from . import usage
 from .store import Entry
+from .usage import Usage
 
 
 MODEL = "claude-haiku-4-5-20251001"
@@ -30,7 +32,11 @@ def _format_entries(entries: list[Entry]) -> str:
     return "\n\n".join(chunks)
 
 
-def search(query: str, entries: list[Entry]) -> str:
+def _text(resp) -> str:
+    return "".join(b.text for b in resp.content if b.type == "text").strip()
+
+
+def search(query: str, entries: list[Entry]) -> tuple[str, Usage]:
     system = (
         "You are reading someone's personal journal to answer their question. "
         "Use only the entries provided. Cite specific entries by their date when "
@@ -46,10 +52,10 @@ def search(query: str, entries: list[Entry]) -> str:
         system=system,
         messages=[{"role": "user", "content": user}],
     )
-    return "".join(b.text for b in resp.content if b.type == "text").strip()
+    return _text(resp), usage.record("search", MODEL, resp)
 
 
-def reflect(entries: list[Entry], days: int) -> str:
+def reflect(entries: list[Entry], days: int) -> tuple[str, Usage]:
     system = (
         "You are reviewing someone's personal journal. Surface recurring themes, "
         "mood patterns, unresolved threads, and anything they mentioned wanting to "
@@ -66,4 +72,4 @@ def reflect(entries: list[Entry], days: int) -> str:
         system=system,
         messages=[{"role": "user", "content": user}],
     )
-    return "".join(b.text for b in resp.content if b.type == "text").strip()
+    return _text(resp), usage.record("reflect", MODEL, resp)
