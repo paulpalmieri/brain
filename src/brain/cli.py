@@ -80,7 +80,7 @@ def cli() -> None:
 @cli.command("add")
 @click.argument("text", required=False)
 def cmd_add(text: str | None) -> None:
-    """Save an entry. With no argument, opens $EDITOR."""
+    """Save an entry. With no argument, opens an inline multi-line editor."""
     body = text if text else _compose()
     if not body.strip():
         console.print("[yellow]Empty entry, nothing saved.[/yellow]")
